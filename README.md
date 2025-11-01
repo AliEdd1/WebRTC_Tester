@@ -15,7 +15,7 @@ It lets you verify whether your VPN or proxy setup exposes your **real IP** thro
 sudo apt update
 sudo apt install -y nginx fcgiwrap curl
 sudo systemctl enable --now fcgiwrap.socket
-
+```
 
 
 ### 🧠 **Section 5 — FastCGI Script**
