@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>WebRTC IP Leak Test</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:2rem;line-height:1.4}
+  h1{font-size:1.25rem;margin:0 0 .75rem}
+  h2{font-size:1.1rem;margin:1.5rem 0 .5rem}
+  button{padding:.6rem 1rem;border:1px solid #ccc;border-radius:10px;cursor:pointer;background:#fafafa}
+  button:disabled{opacity:.6;cursor:not-allowed}
+  .muted{color:#666;font-size:.95rem}
+  pre{background:#f6f6f6;border:1px solid #e5e5e5;border-radius:8px;padding:.75rem;overflow:auto}
+  table{border-collapse:collapse;margin-top:1rem;width:100%;max-width:900px}
+  th,td{border:1px solid #ddd;padding:.5rem;text-align:left;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  th{background:#f6f6f6}
+  .note{margin-top:.75rem}
+  .warn{color:#ad3800;font-weight:600}
+</style>
+</head>
+<body>
+  <h1>WebRTC IP Leak Test</h1>
+
+  <h2>Site Connection (this page)</h2>
+  <div class="muted">Shows the IP you’re connected from (as Nginx sees it) and browser transport.</div>
+  <pre id="conn">Loading…</pre>
+
+  <p class="muted">
+    Browser signals (not WebRTC): Language <code id="lang"></code>,
+    Timezone <code id="tz"></code>, User-Agent <code id="ua"></code>,
+    Transport <code id="nhp"></code>
+  </p>
+
+  <p>
+    <button id="run">Run WebRTC Test</button>
+    <button id="reset" disabled>Reset</button>
+  </p>
+
+  <table id="results" style="display:none">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>IP / Host</th>
+        <th>Type</th>
+        <th>Protocol</th>
+        <th>Related (raddr:rport)</th>
+        <th>Inferred Meaning</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div id="summary" class="note"></div>
+
+<script>
+(async function(){
+  const runBtn = document.getElementById('run');
+  const resetBtn = document.getElementById('reset');
+  const table = document.getElementById('results');
+  const tbody = table.querySelector('tbody');
+  const summary = document.getElementById('summary');
+  const connPre = document.getElementById('conn');
+
+  // Browser signals
+  document.getElementById('lang').textContent =
+    navigator.language + (navigator.languages ? " ["+navigator.languages.join(", ")+"]" : "");
+  try { document.getElementById('tz').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown'; }
+  catch { document.getElementById('tz').textContent = 'unknown'; }
+  document.getElementById('ua').textContent = navigator.userAgent;
+  try {
+    const nav = performance.getEntriesByType('navigation')[0];
+    document.getElementById('nhp').textContent = (nav && nav.nextHopProtocol) || 'unknown';
+  } catch { document.getElementById('nhp').textContent = 'unknown'; }
+
+  // Fetch server-side connection info
+  try {
+    const r = await fetch('/conninfo', { cache: 'no-store' });
+    const j = await r.json();
+    const nav = performance.getEntriesByType('navigation')[0];
+    j.next_hop_protocol = (nav && nav.nextHopProtocol) || 'unknown';
+    j.location = { href: location.href, hostname: location.hostname, port: location.port || '80', protocol: location.protocol.replace(':','') };
+    connPre.textContent = JSON.stringify(j, null, 2);
+  } catch (e) {
+    connPre.textContent = 'Failed to fetch /conninfo: ' + (e && e.message ? e.message : e);
+  }
+
+  let pc = null, seen = new Set(), rowNum = 0;
+
+  const iceServers = [
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" }
+  ];
+
+  function inferMeaning(ip, typ){
+    if (!ip) return '';
+    if (ip.endsWith('.local')) return 'mDNS-masked local address';
+    if (/^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) return 'Private LAN address';
+    if (/^[0-9a-f:]+$/i.test(ip) && ip.includes(':')) return typ === 'host' ? 'Local (IPv6) candidate' : 'Public (IPv6) candidate';
+    if (typ === 'host') return 'Local interface (host)';
+    if (typ === 'srflx') return 'Public (server-reflexive) — WAN/VPN IP';
+    if (typ === 'relay') return 'TURN relayed — privacy-preserving';
+    return '';
+  }
+
+  function addRow(candidate){
+    const parts = candidate.trim().split(/\s+/);
+    const proto = parts[2] || '';
+    const address = parts[4] || '';
+    const port = parts[5] || '';
+    const type = (parts.indexOf('typ') > -1) ? (parts[parts.indexOf('typ')+1] || '') : '';
+    const raddr = (parts.indexOf('raddr') > -1) ? (parts[parts.indexOf('raddr')+1] || '') : '';
+    const rport = (parts.indexOf('rport') > -1) ? (parts[parts.indexOf('rport')+1] || '') : '';
+    const key = [type,address,port].join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    rowNum += 1;
+    const tr = document.createElement('tr');
+    [rowNum, address?`${address}:${port}`:'(unknown)', type||'(unknown)', proto||'(unknown)',
+      (raddr&&rport)?`${raddr}:${rport}`:'', inferMeaning(address,type)]
+      .forEach(c => { const td=document.createElement('td'); td.textContent=c; tr.appendChild(td); });
+    tbody.appendChild(tr);
+    table.style.display = '';
+  }
+
+  async function run(){
+    summary.textContent = ''; tbody.innerHTML = ''; table.style.display='none';
+    seen.clear(); rowNum = 0; runBtn.disabled = true; resetBtn.disabled = false;
+
+    // Mobile nudge: initialize media to wake WebRTC on strict engines (ignored if not needed)
+    if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+      try { await navigator.mediaDevices.getUserMedia({ audio:false, video:false }); } catch {}
+    }
+
+    pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 0 });
+    pc.createDataChannel("test");
+
+    pc.addEventListener('icecandidate', e => { if (e.candidate && e.candidate.candidate) addRow(e.candidate.candidate); });
+    pc.addEventListener('icegatheringstatechange', () => { if (pc && pc.iceGatheringState === 'complete') done(); });
+
+    const offer = await pc.createOffer({ offerToReceiveAudio:false, offerToReceiveVideo:false });
+    await pc.setLocalDescription(offer);
+
+    setTimeout(() => { if (pc && pc.iceGatheringState !== 'complete') done(true); }, 5000);
+  }
+
+  function done(timeout=false){
+    if (pc) { try { pc.close(); } catch {} pc = null; }
+    const rows = [...tbody.querySelectorAll('tr')].map(tr => ({ type: tr.children[2].textContent, ip: (tr.children[1].textContent||'').split(':')[0] }));
+    const hasSrflx = rows.some(r => r.type === 'srflx');
+    const hasRelay = rows.some(r => r.type === 'relay');
+    let msg = hasSrflx
+      ? 'Found <span class="warn">Public (srflx)</span> candidate(s). If they match your REAL ISP IP you have a leak; if they match your VPN IP you are OK.'
+      : hasRelay
+      ? 'Only TURN relay candidates found — good for privacy.'
+      : 'No public (srflx) candidates found (likely local/mDNS only).';
+    if (timeout) msg += ' (Timed out awaiting ICE completion.)';
+    summary.innerHTML = msg; runBtn.disabled = false;
+  }
+
+  function reset(){
+    if (pc) { try { pc.close(); } catch {} pc = null; }
+    tbody.innerHTML=''; table.style.display='none'; summary.textContent='';
+    runBtn.disabled=false; resetBtn.disabled=true; seen.clear(); rowNum=0;
+  }
+
+  runBtn.addEventListener('click', run);
+  resetBtn.addEventListener('click', reset);
+})();
+</script>
+</body>
+</html>
