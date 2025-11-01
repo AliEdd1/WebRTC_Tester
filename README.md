@@ -16,23 +16,23 @@ sudo apt update
 sudo apt install -y nginx fcgiwrap curl
 sudo systemctl enable --now fcgiwrap.socket
 
----
+
 
 ### 🧠 **Section 5 — FastCGI Script**
+```bash
+ chmod +x /usr/lib/cgi-bin/conninfo.sh
+```
 
-sudo chmod +x /usr/lib/cgi-bin/conninfo.sh
 
-
----
-
+```bash
 nginx -t && sudo systemctl reload nginx
-
+```
 
 ---
 
 ### 🧾 **Section 7 — WebRTC Test Page**
-```markdown
-## 🌍 WebRTC Leak Test Page — `/var/www/html/webrtc-leak.html`
+markdown
+ 🌍 WebRTC Leak Test Page — `/var/www/html/webrtc-leak.html`
 
 This page lists all WebRTC ICE candidates and fetches `/conninfo` to show the server-side IP and geo info.
 
@@ -42,4 +42,4 @@ Open → `http://<server-ip>/webrtc-leak.html`
 ## 🧪 Verify
 ```bash
 curl -s http://<server-ip>/conninfo | jq .
-
+```
