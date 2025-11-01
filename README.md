@@ -19,67 +19,13 @@ sudo systemctl enable --now fcgiwrap.socket
 ---
 
 ### 🧠 **Section 5 — FastCGI Script**
-```markdown
-## 🖥️ FastCGI Script — `/usr/lib/cgi-bin/conninfo.sh`
-```bash
-#!/bin/bash
-echo "Content-Type: application/json"
-echo ""
-
-CLIENT_IP="${HTTP_CF_CONNECTING_IP:-$HTTP_X_REAL_IP}"
-[ -z "$CLIENT_IP" ] && CLIENT_IP="${REMOTE_ADDR}"
-
-GEO_JSON="$(curl -s --max-time 2 "https://ipwho.is/${CLIENT_IP}")"
-[ -z "$GEO_JSON" ] && GEO_JSON='{"success":false,"message":"geo lookup failed"}'
-
-cat <<JSON
-{
-  "client_ip": "${CLIENT_IP}",
-  "geo": ${GEO_JSON}
-}
-JSON
-
-
 
 sudo chmod +x /usr/lib/cgi-bin/conninfo.sh
 
 
-
-
 ---
 
-### 🌐 **Section 6 — Nginx Site Config**
-```markdown
-## ⚙️ Nginx Site Config — `/etc/nginx/sites-available/default`
-```nginx
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-
-    server_name _;
-
-    root /var/www/html;
-    index index.html index.htm webrtc-leak.html;
-
-    # Serve static files
-    location / {
-        try_files $uri $uri/ =404;
-    }
-
-    # FastCGI endpoint for /conninfo
-    location = /conninfo {
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME /usr/lib/cgi-bin/conninfo.sh;
-        fastcgi_pass unix:/run/fcgiwrap.socket;
-    }
-
-    # Basic hardening
-    location ~ /\.ht { deny all; }
-}
-
-
 nginx -t && sudo systemctl reload nginx
-
 
 
 ---
